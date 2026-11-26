@@ -1,0 +1,4 @@
+{
+  "description": "Selective Context Trim: inspect_session and trim_session tools, end-of-turn rewrite of the session transcript, verified reload and rollback",
+  "modules": ["./register.ts"]
+}

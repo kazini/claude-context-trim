@@ -1,0 +1,18 @@
+#!/bin/bash
+# test shim around the real mv.
+#  CORRUPT_ONCE=<marker>  : once, after swapping a transcript in, overwrite it with garbage
+#  HANG_ONCE=<marker>     : once, after swapping a transcript in, replace it with a named pipe whose writer stays
+#                           silent for $HANG_SECS (default 9) so the reader (Claude Code's /resume) really blocks
+/bin/mv "$@"; rc=$?
+dest="${@: -1}"
+if [[ "$dest" == *.jsonl ]]; then
+  if [ -n "$CORRUPT_ONCE" ] && [ ! -e "$CORRUPT_ONCE" ]; then
+    echo '{"this is not a valid transcript' > "$dest"; : > "$CORRUPT_ONCE"
+    echo "$(date +%s.%N) corrupted $dest" >> "$CORRUPT_ONCE.log"
+  elif [ -n "$HANG_ONCE" ] && [ ! -e "$HANG_ONCE" ]; then
+    : > "$HANG_ONCE"; rm -f "$dest"; mkfifo "$dest"
+    echo "$(date +%s.%N) fifo-in-place $dest (writer holds ${HANG_SECS:-9}s)" >> "$HANG_ONCE.log"
+    setsid bash -c 'exec 3>"$0"; sleep "$1"; echo "$(date +%s.%N) writer released" >> "$2"' "$dest" "${HANG_SECS:-9}" "$HANG_ONCE.log" >/dev/null 2>&1 </dev/null &
+  fi
+fi
+exit $rc

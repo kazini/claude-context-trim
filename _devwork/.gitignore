@@ -1,0 +1,59 @@
+# Applies to everything under _devwork/ (git only reads a .gitignore for its own folder and below).
+# The plugin folder has its own .gitignore for its generated files; the repo root has none.
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+# API keys for the real-model tests. Never commit; .apikeys.example is the committed template.
+.apikeys
+.apikeys.*
+!.apikeys.example
+.env
+.env.*
+
+# ── Dependencies ────────────────────────────────────────────────────────────
+# (no trailing slash: this also matches a node_modules SYMLINK)
+node_modules
+
+# ── Test bed: Claude Code installed locally for live tests ──────────────────
+# Everything inside cc/ is the install; only the version pin (package.json + lock) is tracked.
+# Reinstall with _scripts/restore.sh, remove with _scripts/clean.sh.
+cc_testenv/cc/*
+!cc_testenv/cc/package.json
+!cc_testenv/cc/package-lock.json
+
+# ── Test bed: generated state (all re-seeded by cc_testenv/reset.sh) ─────────
+# CLAUDE_CONFIG_DIR: sessions, history, backups, marketplace plugin cache, fake API key trust ...
+cc_testenv/claude-config/
+# Fake-provider request log + captured bodies, TUI/relay captures, driver output, fault-injection markers
+cc_testenv/api.log
+cc_testenv/reqs/
+cc_testenv/relay/
+cc_testenv/tui.raw
+cc_testenv/tui.txt
+cc_testenv/tui.cmd
+cc_testenv/tui.pid
+cc_testenv/tui.out
+cc_testenv/drive.out
+cc_testenv/mod-debug.log
+cc_testenv/nim.done
+cc_testenv/.hung
+cc_testenv/.hung.log
+cc_testenv/.corrupted*
+cc_testenv/fake/server.out
+# written by the `dupes` / `nim` scenarios (the Edit step mutates it)
+cc_testenv/work/dup.txt
+
+# ── Release builds: package_plugin.py writes here by default ────────────────
+dist/
+*.zip
+*.jsonl_trim-backup
+
+# ── Caches, logs, editor noise ──────────────────────────────────────────────
+__pycache__/
+*.pyc
+.cache/
+.npm/
+*.tsbuildinfo
+*.log
+.DS_Store
+.idea/
+.vscode/

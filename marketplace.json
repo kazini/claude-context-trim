@@ -1,0 +1,20 @@
+{
+  "name": "kazini-context-trim",
+  "description": "Claude Code plugins by Kazini.",
+  "owner": {
+    "name": "Kazini",
+    "url": "https://github.com/kazini"
+  },
+  "plugins": [
+    {
+      "name": "selective-context-trim",
+      "source": {
+        "source": "archive",
+        "url": "https://github.com/kazini/claude-context-trim/releases/latest/download/selective-context-trim_stable.zip"
+      },
+      "description": "Cache-aware, agent-driven context trimming for long Claude Code sessions.",
+      "homepage": "https://github.com/kazini/claude-context-trim/releases",
+      "repository": "https://github.com/kazini/claude-context-trim"
+    }
+  ]
+}

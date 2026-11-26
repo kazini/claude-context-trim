@@ -1,0 +1,141 @@
+{
+  "name": "selective-context-trim",
+  "displayName": "Selective Context Trim",
+  "version": "1.1.0",
+  "description": "Selective Context Trim: lets the agent inspect and surgically trim its own context (by tool_use_id and/or regex; stub, summary or delete), flags older copies that a newer result makes redundant on its own (edited files re-read, commands re-run, repeated sections) plus older results of its own inspect/trim tools, with a cache-aware cost/benefit guard, a single-slot .jsonl_trim-backup, a verified /resume reload and automatic rollback.",
+  "author": {
+    "name": "Kazini"
+  },
+  "homepage": "https://github.com/kazini/claude-context-trim/releases",
+  "repository": "https://github.com/kazini/claude-context-trim",
+  "license": "MIT",
+  "icon": "./icon.png",
+  "documentationUrl": "https://github.com/kazini/claude-context-trim#readme",
+  "supportUrl": "https://github.com/kazini/claude-context-trim/issues",
+  "privacyPolicyUrl": "https://github.com/kazini/claude-context-trim#privacy",
+  "keywords": [
+    "context",
+    "trim",
+    "session",
+    "dedupe",
+    "cache",
+    "mod"
+  ],
+  "userConfig": {
+    "cacheTtl": {
+      "type": "string",
+      "title": "Prompt-cache TTL",
+      "description": "Which cache write price the cost model uses. auto follows the lifetime the API's own usage reports (falls back to 5m).",
+      "options": [
+        "auto",
+        "5m",
+        "1h"
+      ],
+      "default": "auto"
+    },
+    "cacheReadMultiplier": {
+      "type": "number",
+      "title": "Cache read price multiplier",
+      "description": "Price of a cache read relative to base input. 0 picks it from the model (0.1x, 0.05x on Opus/Sonnet 5.5, 0.025x on Fable/Mythos 5.1).",
+      "default": 0,
+      "min": 0,
+      "max": 1
+    },
+    "assumedRemainingRequests": {
+      "type": "number",
+      "title": "Assumed remaining requests",
+      "description": "How many more model requests a trim is assumed to benefit when the agent does not say. Higher = more permissive.",
+      "default": 12,
+      "min": 1,
+      "max": 500
+    },
+    "minSavingsTokens": {
+      "type": "number",
+      "title": "Minimum tokens saved",
+      "description": "Trims freeing fewer estimated tokens than this are refused as not worth a reload.",
+      "default": 3000,
+      "min": 0
+    },
+    "sizeableTokens": {
+      "type": "number",
+      "title": "Sizeable-trim threshold (tokens)",
+      "description": "A single trim saving at least this much is judged on its long-term payback instead of having to beat the tokens it forces the cache to recompute.",
+      "default": 20000,
+      "min": 1000
+    },
+    "lookbackBlocks": {
+      "type": "number",
+      "title": "Cache lookback (blocks)",
+      "description": "How many content blocks back the API looks for a surviving cache entry (20 per Anthropic's docs). Raise it if your setup places extra cache breakpoints in the history.",
+      "default": 20,
+      "min": 1
+    },
+    "reloadStrategy": {
+      "type": "string",
+      "title": "Reload strategy",
+      "description": "auto: try /resume <id>, fall back to /clear then /resume <id> if it does not reload. direct or clear-resume force one.",
+      "options": [
+        "auto",
+        "direct",
+        "clear-resume"
+      ],
+      "default": "auto"
+    },
+    "resumeTimeoutMs": {
+      "type": "number",
+      "title": "Resume watchdog (ms)",
+      "description": "How long to wait for the reloaded session before rolling back to the backup.",
+      "default": 5000,
+      "min": 1000,
+      "max": 60000
+    },
+    "autoContinue": {
+      "type": "boolean",
+      "title": "Auto-continue",
+      "description": "After a successful reload, prompt the agent to continue its task.",
+      "default": true
+    },
+    "charsPerToken": {
+      "type": "number",
+      "title": "Characters per token",
+      "description": "Estimate used to convert sizes to tokens (code is about 3.5).",
+      "default": 3.5,
+      "min": 2,
+      "max": 6
+    },
+    "nudges": {
+      "type": "boolean",
+      "title": "Hints after large results",
+      "description": "After a large tool result, add a one-line hint (with its tool_use_id) reminding the agent it can flag the result for trimming once it is finished with it. Costs about 60 tokens per hint, at most one per few tool calls.",
+      "default": true
+    },
+    "nudgeTokens": {
+      "type": "number",
+      "title": "Hint threshold (tokens)",
+      "description": "Only results at least this large trigger a hint.",
+      "default": 6000,
+      "min": 500,
+      "max": 200000
+    },
+    "autoFlag": {
+      "type": "boolean",
+      "title": "Flag redundant older copies automatically",
+      "description": "When a newer result repeats an older one (a file read again after edits, a command re-run, the same section twice), flag the OLDER copy for trimming without being asked. It is replaced by a short pointer to the newer one and only applied when it pays off against the prompt cache. Older results of the plugin's own inspect_session / trim_session calls are also flagged for deletion (the newest one is kept); those are independent of this option. The agent can cancel any of these with unflag.",
+      "default": true
+    },
+    "similarity": {
+      "type": "number",
+      "title": "Duplicate similarity (0.5–1)",
+      "description": "How much of an older result a newer one from a DIFFERENT source (another file or command) must still contain before the older one is flagged automatically. The same file or command is held to a lower bar (this minus 0.35, at least 0.5), because the new version is expected to differ. Raise it to be more cautious.",
+      "default": 0.95,
+      "min": 0.5,
+      "max": 1
+    },
+    "autoAllowTools": {
+      "type": "boolean",
+      "title": "Pre-approve the plugin's tools",
+      "description": "Answer Claude Code's permission prompt for this plugin's own two tools (inspect_session, trim_session) so unattended agents are never blocked. They only edit this session's transcript. Turn off to use your normal permission rules instead.",
+      "default": true
+    }
+  }
+}

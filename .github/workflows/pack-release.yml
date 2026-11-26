@@ -1,0 +1,258 @@
+name: Package release
+run-name: "Package release ${{ inputs.tag || github.event.release.tag_name || github.sha }}"
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to create or replace (e.g. v1.1). Release events use their own tag.'
+        required: true
+        type: string
+      description:
+        description: "Optional: release description. Leave blank to reuse an overwritten release's description, or use the last commit message for a new release."
+        required: false
+        type: string
+
+permissions:
+  actions: write
+  contents: write
+
+# The release step deletes and recreates a tag; never let two runs do that to the same tag at once.
+concurrency:
+  group: package-release-${{ inputs.tag || github.event.release.tag_name || 'manifest' }}
+  cancel-in-progress: false
+
+env:
+  PLUGIN_MANIFEST: selective-context-trim/.claude-plugin/plugin.json
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      INPUT_TAG: ${{ inputs.tag }}
+      INPUT_DESCRIPTION: ${{ inputs.description }}
+      EVENT_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          manifest() {
+            python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))' "${PLUGIN_MANIFEST}" "$1"
+          }
+          name="$(manifest name)"
+          if [ -z "${name}" ]; then
+            echo "::error::Could not read name from ${PLUGIN_MANIFEST}"
+            exit 1
+          fi
+
+          if [ -n "${INPUT_TAG}" ]; then
+            TAG="${INPUT_TAG}"
+          elif [ -n "${EVENT_TAG}" ]; then
+            TAG="${EVENT_TAG}"
+          else
+            echo "::error::No release tag available; pass tag when dispatching this workflow manually."
+            exit 1
+          fi
+          version="${TAG#v}"
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::Release tag ${TAG} must be vMAJOR.MINOR or vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+          # Directory listings show a semver, so v1.1 is released as 1.1.0.
+          case "${version}" in
+            *.*.*) ;;
+            *.*) version="${version}.0" ;;
+            *) version="${version}.0.0" ;;
+          esac
+
+          # The manifest pins this version. The step below commits a bump when needed, and
+          # the release targets that commit, so directory and marketplace users see the same version.
+          echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "name=${name}" >> "${GITHUB_OUTPUT}"
+          echo "Using release tag: ${TAG} (version ${version}, plugin ${name})"
+
+      - name: Apply release version and README to plugin
+        id: bump
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          python3 - "${VERSION}" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("selective-context-trim/.claude-plugin/plugin.json")
+          data = json.loads(path.read_text("utf-8"))
+          data["version"] = sys.argv[1]
+          path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", "utf-8")
+          PY
+
+          # The repo-root README is the single source of truth. Keep the copy in
+          # the plugin folder in sync so the directory reads the same documentation.
+          cp README.md selective-context-trim/README.md
+
+          git config user.name Kazini
+          git config user.email kazini-jo2@hotmail.com
+          git add "${PLUGIN_MANIFEST}" selective-context-trim/README.md
+          if git diff --cached --quiet; then
+            echo "Manifest and README already up to date; no release commit needed."
+            echo "sha=${GITHUB_SHA}" >> "${GITHUB_OUTPUT}"
+          else
+            git commit -m "chore: release ${TAG}"
+            git push origin "HEAD:${DEFAULT_BRANCH}"
+            echo "sha=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+          fi
+
+      # Build before touching the release, so a failing test run never deletes a good release.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build release zip
+        shell: bash
+        env:
+          NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          zip_name="${NAME}_stable.zip"
+          zip_path="${RUNNER_TEMP}/${zip_name}"
+
+          # Runs the test suite first and aborts on failure; leaves tests/, node_modules,
+          # generated types and the dev-only .gitignore out of the zip, and bundles the repo-root
+          # README.md/LICENSE (plus any other LICENSE*) and _devwork/install_manual.py into the
+          # plugin folder inside the zip (see _devwork/package_plugin.py). Only this script builds releases.
+          python3 _devwork/package_plugin.py --out "${zip_path}"
+
+          unzip -l "${zip_path}"
+          # README.md and LICENSE live at the repo root; icon.png lives in the plugin folder;
+          # install_manual.py comes from _devwork. All four must be bundled into the zip.
+          for file in README.md LICENSE icon.png install_manual.py; do
+            if ! unzip -l "${zip_path}" | grep -q " ${NAME}/${file}$"; then
+              echo "::error::${NAME}/${file} is missing from the release zip"
+              exit 1
+            fi
+          done
+          if unzip -l "${zip_path}" | grep -q " ${NAME}/\.gitignore$"; then
+            echo "::error::dev-only ${NAME}/.gitignore leaked into the release zip"
+            exit 1
+          fi
+          if unzip -l "${zip_path}" | grep -q " ${NAME}/package\.json$"; then
+            echo "::error::dev-only ${NAME}/package.json leaked into the release zip"
+            exit 1
+          fi
+
+          # This is the only release asset. Marketplace consumers use this stable name via
+          # /releases/latest/download/..., so the catalog never changes between releases.
+          echo "ZIP_PATH=${zip_path}" >> "${GITHUB_ENV}"
+          echo "ZIP_NAME=${zip_name}" >> "${GITHUB_ENV}"
+
+      - name: Replace GitHub release if it already exists
+        id: release
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          TARGET_SHA: ${{ steps.bump.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          old_notes=""
+          old_name=""
+          old_sha=""
+          old_target=""
+          existing_release=""
+          if existing_release="$(gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" --json name,body,targetCommitish 2>/dev/null)"; then
+            old_name="$(jq -r '.name // ""' <<< "${existing_release}")"
+            old_notes="$(jq -r '.body // ""' <<< "${existing_release}")"
+            old_target="$(jq -r '.targetCommitish // ""' <<< "${existing_release}")"
+            echo "Deleting existing release ${TAG} (label: ${old_name:-<none>})"
+            gh release delete "${TAG}" --yes --repo "${GITHUB_REPOSITORY}"
+          fi
+
+          # The tag decides whether a release exists; its existing label is the reference
+          # metadata we carry forward so replacing a version never renames its release.
+          release_title="${old_name:-${TAG}}"
+
+          # Prefer the old tag's commit; targetCommitish can be a branch name.
+          if [ -z "${old_sha}" ]; then
+            old_sha="$(git rev-parse -q --verify "refs/tags/${TAG}^{commit}" 2>/dev/null || true)"
+          fi
+          if [ -z "${old_sha}" ] && [ -n "${old_target}" ]; then
+            old_sha="$(git rev-parse -q --verify "${old_target}^{commit}" 2>/dev/null || true)"
+          fi
+
+          if gh api --silent "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Deleting existing git tag ${TAG}"
+            gh api --silent -X DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" >/dev/null
+          fi
+
+          # Drop a stale local tag so the next fetch picks up the recreated one.
+          git tag -d "${TAG}" >/dev/null 2>&1 || true
+
+          if [ -n "${INPUT_DESCRIPTION}" ]; then
+            notes="${INPUT_DESCRIPTION}"
+          elif [ -n "${old_notes}" ]; then
+            notes="${old_notes}"
+            echo "Reusing description from the previous ${TAG} release"
+          else
+            notes="$(git log -1 --pretty=%B "${TARGET_SHA}")"
+          fi
+
+          gh release create "${TAG}" \
+            --target "${TARGET_SHA}" \
+            --title "${release_title}" \
+            --notes "${notes:-Release ${TAG}}" \
+            --repo "${GITHUB_REPOSITORY}"
+          echo "Created release ${TAG} (label: ${release_title}) from ${TARGET_SHA}"
+          echo "old-target-sha=${old_sha}" >> "${GITHUB_OUTPUT}"
+
+          git fetch --force --tags origin
+
+      - name: Delete superseded release workflow runs
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          OLD_SHA: ${{ steps.release.outputs.old-target-sha }}
+        run: |
+          set -euo pipefail
+
+          runs="$(
+            gh api --paginate --silent \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?per_page=100" \
+              --jq '.workflow_runs[] | select((.name // "") | startswith("Package release")) | [.id, .name, .head_sha] | @tsv' 2>/dev/null || true
+          )"
+
+          while IFS=$'\t' read -r run_id run_name run_sha; do
+            [ -n "${run_id}" ] || continue
+            [ "${run_id}" = "${GITHUB_RUN_ID}" ] && continue
+
+            if [ "${run_name}" = "Package release ${TAG}" ] || { [ -n "${OLD_SHA}" ] && [ "${run_sha}" = "${OLD_SHA}" ]; }; then
+              echo "Deleting superseded workflow run ${run_id}"
+              gh api --silent -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}" >/dev/null
+            fi
+          done <<< "${runs}"
+
+      - name: Upload zip to release
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release upload "${TAG}" "${ZIP_PATH}" --repo "${GITHUB_REPOSITORY}" --clobber
+          echo "Attached ${ZIP_NAME} to release ${TAG}"
